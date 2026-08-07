@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>Taildrop Web</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f0f2f5; color: #222; }
+  header { background: #0f7acc; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  .container { max-width: 900px; margin: 24px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 20px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.1); padding: 20px 24px; }
+  .card h2 { font-size: 15px; font-weight: 600; color: #444; margin-bottom: 14px; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+
+  .device-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  .device-item label {
+    display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+    border: 1.5px solid #ddd; border-radius: 8px; cursor: pointer;
+    font-size: 14px; transition: border-color .15s, background .15s; user-select: none;
+  }
+  .device-item label:has(input:checked) { border-color: #0f7acc; background: #e8f3fd; }
+  .device-item label:has(input:disabled) { opacity: .45; cursor: not-allowed; }
+
+  .drop-zone {
+    border: 2.5px dashed #0f7acc; border-radius: 12px; padding: 48px 20px;
+    text-align: center; background: #f8fbff; cursor: pointer;
+    transition: background .15s; font-size: 15px; color: #555;
+  }
+  .drop-zone.dragover { background: #dceffe; border-color: #0056a0; }
+  .file-list { margin-top: 10px; font-size: 13px; color: #555; line-height: 1.8;
+    max-height: 140px; overflow-y: auto; padding: 0 4px; }
+
+  .server-files { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .sf-item label {
+    display: flex; align-items: center; gap: 10px; padding: 7px 10px;
+    border-radius: 6px; cursor: pointer; font-size: 14px; transition: background .1s; user-select: none;
+  }
+  .sf-item label:hover { background: #f0f4f8; }
+  .sf-meta { margin-left: auto; font-size: 12px; color: #999; white-space: nowrap; }
+  .empty-msg { color: #999; font-size: 14px; text-align: center; padding: 20px; }
+
+  .toolbar { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+  .tbtn { font-size: 12px; color: #0f7acc; background: none; border: 1px solid #c5dcf0;
+    border-radius: 5px; cursor: pointer; padding: 3px 9px; }
+  .tbtn:hover { background: #e8f3fd; }
+  .tbtn.gray { color: #666; border-color: #ddd; }
+  .tbtn.gray:hover { background: #f5f5f5; }
+  .ml-auto { margin-left: auto; }
+
+  .send-btn {
+    width: 100%; padding: 13px; font-size: 16px; font-weight: 600;
+    background: #0f7acc; color: #fff; border: none; border-radius: 10px;
+    cursor: pointer; transition: background .15s;
+  }
+  .send-btn:hover:not(:disabled) { background: #0960a5; }
+  .send-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .progress-wrap { margin-top: 10px; display: none; }
+  .progress-wrap.show { display: block; }
+  .progress-bar-bg { background: #e0e8f0; border-radius: 6px; height: 10px; overflow: hidden; }
+  .progress-bar { background: #0f7acc; height: 100%; width: 0%; transition: width .2s; border-radius: 6px; }
+  .progress-label { font-size: 12px; color: #666; margin-top: 4px; }
+
+  #status { font-size: 14px; line-height: 1.9; }
+  .ok   { color: #1a7f3c; }
+  .err  { color: #c0392b; }
+  .warn { color: #b07800; }
+
+  .error-toast {
+    position: fixed; bottom: 20px; right: 20px; background: #c0392b; color: #fff;
+    padding: 12px 18px; border-radius: 8px; font-size: 13px; max-width: 360px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.2); display: none; z-index: 999;
+  }
+</style>
+</head>
+<body>
+<header>
+  <span style="font-size:22px">🚀</span>
+  <h1>Taildrop Web</h1>
+</header>
+
+<div class="container">
+
+  <div class="card">
+    <h2>📡 送信先デバイス</h2>
+    <div class="device-grid" id="device-list">読み込み中...</div>
+  </div>
+
+  <div class="card">
+    <h2>📂 ファイルをアップロードして送信</h2>
+    <div id="drop-zone" class="drop-zone">
+      <div>ここにファイルをドロップ</div>
+      <div style="font-size:13px;margin-top:6px;color:#999">またはクリックして選択（複数可）</div>
+    </div>
+    <input type="file" id="file-input" multiple style="display:none">
+    <div id="upload-file-list" class="file-list"></div>
+  </div>
+
+  <div class="card">
+    <h2>🗂 サーバ上のファイルから送信</h2>
+    <div class="toolbar">
+      <button class="tbtn" onclick="selectAll(true)">全て選択</button>
+      <button class="tbtn" onclick="selectAll(false)">全て解除</button>
+      <button class="tbtn gray ml-auto" onclick="loadServerFiles()">🔄 更新</button>
+    </div>
+    <div class="server-files" id="server-files">読み込み中...</div>
+  </div>
+
+  <div class="card">
+    <button class="send-btn" id="send-btn" onclick="sendAll()" disabled>📤 送信</button>
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-bar-bg"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="progress-label" id="progress-label"></div>
+    </div>
+    <div id="status" style="margin-top:14px"></div>
+  </div>
+
+</div>
+
+<div class="error-toast" id="errorToast"></div>
+
+<script>
+let selectedDevices = [];
+let uploadFiles     = [];
+
+function showError(msg) {
+  const toast = document.getElementById('errorToast');
+  toast.textContent = '⚠️ ' + msg;
+  toast.style.display = 'block';
+  clearTimeout(toast._hideTimer);
+  toast._hideTimer = setTimeout(() => { toast.style.display = 'none'; }, 6000);
+}
+
+// ---- デバイス ----
+function loadDevices() {
+  const div = document.getElementById('device-list');
+  fetch('/devices')
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(data => {
+      div.innerHTML = '';
+      if (!data.length) { div.textContent = 'デバイスが見つかりません'; return; }
+      data.forEach(d => {
+        const wrap = document.createElement('div');
+        wrap.className = 'device-item';
+        wrap.innerHTML = `<label>
+          <input type="checkbox" value="${d.dns_name}" ${d.online ? '' : 'disabled'}>
+          <span>${d.online ? '🟢' : '⚪'}</span>
+          <span>${d.name}<br><small style="color:#999;font-weight:400">${d.lastseen}</small></span>
+        </label>`;
+        wrap.querySelector('input').onchange = () => {
+          selectedDevices = [...document.querySelectorAll('#device-list input:checked')].map(i => i.value);
+          updateBtn();
+        };
+        div.appendChild(wrap);
+      });
+    })
+    .catch((err) => {
+      console.error('loadDevices failed:', err);
+      div.textContent = 'デバイス取得エラー';
+      showError('デバイス一覧の取得に失敗しました: ' + err.message);
+    });
+}
+loadDevices();
+
+// ---- ドロップゾーン ----
+const zone      = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+zone.addEventListener('click',     () => fileInput.click());
+zone.addEventListener('dragover',  e  => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', ()  => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault(); zone.classList.remove('dragover');
+  setUploadFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', e => setUploadFiles(e.target.files));
+
+function setUploadFiles(files) {
+  if (!files || !files.length) return;
+  uploadFiles = [...files];
+  document.getElementById('upload-file-list').innerHTML =
+    uploadFiles.map(f => `📄 ${f.name} <span style="color:#aaa">(${humanSize(f.size)})</span>`).join('<br>');
+  updateBtn();
+}
+
+function humanSize(b) {
+  if (b < 1024)       return b + ' B';
+  if (b < 1024**2)    return (b/1024).toFixed(1) + ' KB';
+  if (b < 1024**3)    return (b/1024**2).toFixed(1) + ' MB';
+  return (b/1024**3).toFixed(2) + ' GB';
+}
+
+// ---- サーバファイル ----
+function loadServerFiles() {
+  const div = document.getElementById('server-files');
+  div.innerHTML = '<span style="color:#999;font-size:14px;padding:10px;display:block">読み込み中...</span>';
+  fetch('/server-files')
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(data => {
+      div.innerHTML = '';
+      if (!data.length) { div.innerHTML = '<div class="empty-msg">ファイルがありません</div>'; return; }
+      data.forEach(f => {
+        const item = document.createElement('div');
+        item.className = 'sf-item';
+        item.innerHTML = `<label>
+          <input type="checkbox" name="sf" value="${f.name}" onchange="updateBtn()">
+          <span>${f.is_dir ? '📁' : '📄'}</span>
+          <span>${f.name}</span>
+          <span class="sf-meta">${f.size_str}</span>
+        </label>`;
+        div.appendChild(item);
+      });
+    })
+    .catch((err) => {
+      console.error('loadServerFiles failed:', err);
+      div.innerHTML = '<div class="empty-msg">取得エラー</div>';
+      showError('サーバファイル一覧の取得に失敗しました: ' + err.message);
+    });
+}
+loadServerFiles();
+
+function selectAll(state) {
+  document.querySelectorAll('#server-files input[name="sf"]').forEach(c => c.checked = state);
+  updateBtn();
+}
+
+// ---- ボタン制御 ----
+function updateBtn() {
+  const hasTarget = selectedDevices.length > 0;
+  const hasUpload = uploadFiles.length > 0;
+  const hasSF     = [...document.querySelectorAll('#server-files input[name="sf"]:checked')].length > 0;
+  document.getElementById('send-btn').disabled = !(hasTarget && (hasUpload || hasSF));
+}
+
+// ---- プログレス ----
+function setProgress(pct, label) {
+  document.getElementById('progress-wrap').classList.add('show');
+  document.getElementById('progress-bar').style.width   = pct + '%';
+  document.getElementById('progress-label').textContent = label;
+}
+function hideProgress() {
+  document.getElementById('progress-wrap').classList.remove('show');
+  document.getElementById('progress-bar').style.width = '0%';
+}
+
+// ---- XHR（プログレス付き） ----
+function xhrUpload(url, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+    xhr.onload  = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`サーバーエラー (HTTP ${xhr.status})`));
+        return;
+      }
+      try { resolve(JSON.parse(xhr.responseText)); }
+      catch(e) { reject(new Error('レスポンスのパース失敗')); }
+    };
+    xhr.onerror = () => reject(new Error('ネットワークエラー'));
+    xhr.send(formData);
+  });
+}
+
+// ---- 送信 ----
+async function sendAll() {
+  if (!selectedDevices.length) { alert('送信先を選択してください'); return; }
+  const btn    = document.getElementById('send-btn');
+  const status = document.getElementById('status');
+  btn.disabled = true; btn.textContent = '送信中...';
+  status.innerHTML = '';
+  hideProgress();
+  const results = [];
+
+  // 1) アップロードファイル（1ファイルずつ）
+  for (let i = 0; i < uploadFiles.length; i++) {
+    const f = uploadFiles[i];
+    setProgress(
+      Math.round(i / uploadFiles.length * 100),
+      `送信中 ${i + 1} / ${uploadFiles.length}: ${f.name}`
+    );
+    const form = new FormData();
+    form.append('devices', JSON.stringify(selectedDevices));
+    form.append('file', f, f.name);
+    try {
+      const res = await xhrUpload('/send-upload', form, (loaded, total) => {
+        const base = Math.round(i / uploadFiles.length * 100);
+        const step = Math.round(loaded / total * (100 / uploadFiles.length));
+        setProgress(base + step,
+          `送信中 ${i + 1}/${uploadFiles.length}: ${f.name}  ${humanSize(loaded)} / ${humanSize(total)}`
+        );
+      });
+      results.push(...res.results);
+    } catch(e) {
+      console.error('upload send failed:', e);
+      results.push({ ok: false, msg: `❌ ${f.name} 送信エラー: ${e.message}` });
+    }
+  }
+  if (uploadFiles.length) hideProgress();
+
+  // 2) サーバファイル
+  const sfChecked = [...document.querySelectorAll('#server-files input[name="sf"]:checked')].map(c => c.value);
+  if (sfChecked.length > 0) {
+    status.innerHTML = '<span style="color:#555">⏳ サーバファイル送信中...</span>';
+    try {
+      const r = await fetch('/send-server', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ files: sfChecked, devices: selectedDevices })
+      });
+      if (!r.ok) throw new Error(`サーバーエラー (HTTP ${r.status})`);
+      const res = await r.json();
+      results.push(...res.results);
+    } catch(e) {
+      console.error('server file send failed:', e);
+      results.push({ ok: false, msg: `❌ サーバファイル送信エラー: ${e.message}` });
+    }
+  }
+
+  status.innerHTML = results.map(r =>
+    `<div class="${r.ok ? 'ok' : 'err'}">${r.msg}</div>`
+  ).join('') || '<span class="ok">完了</span>';
+
+  btn.textContent = '📤 送信';
+  btn.disabled    = false;
+  hideProgress();
+}
+</script>
+</body>
+</html>
