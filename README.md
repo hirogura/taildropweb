@@ -96,3 +96,7 @@ sudo rm -rf /opt/taildrop-web
 | `favicon.svg` | ファビコン |
 | `requirements.txt` | 依存パッケージ一覧 |
 | `install-taildropweb.sh` | インストールスクリプト |
+
+## ライセンス
+
+このプロジェクトは [MIT License](LICENSE) の下で公開されています。
