@@ -20,7 +20,7 @@ BRANCH="${BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/taildrop-web}"
 SERVICE_NAME="${SERVICE_NAME:-taildrop-web}"
 PORT="${PORT:-3349}"
-TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-3348}"
+TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-3349}"
 SERVER_FILE_DIR="${SERVER_FILE_DIR:-/opt/lxd-data/taildrop}"
 
 info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }

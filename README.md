@@ -39,8 +39,8 @@ sudo bash install-taildropweb.sh
 
 インストール完了後、表示される URL にアクセスしてください:
 
-- `http://<Tailscale IP>:3349`
-- `http://<MagicDNS名>:3349`
+- `http://<Tailscale IP>:3349`（サーバローカルのみ）
+- `https://<MagicDNS名>:3349`（Tailnet 内・Tailscale Serve 経由）
 
 ### 設定（環境変数による上書き）
 
@@ -53,6 +53,7 @@ sudo bash install-taildropweb.sh
 | `INSTALL_DIR` | インストール先ディレクトリ | `/opt/taildrop-web` |
 | `SERVICE_NAME` | systemd サービス名 | `taildrop-web` |
 | `PORT` | バインドするポート | `3349` |
+| `TAILSCALE_HTTPS_PORT` | Tailscale Serve で公開する HTTPS ポート | `3349` |
 | `SERVER_FILE_DIR` | サーバ上のファイル置き場 | `/opt/lxd-data/taildrop` |
 
 例:

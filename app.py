@@ -454,7 +454,7 @@ def main():
 
     host  = os.environ.get('HOST', '127.0.0.1')
     port  = int(os.environ.get('PORT', 3349))
-    https_port = int(os.environ.get('TAILSCALE_HTTPS_PORT', 3348))
+    https_port = int(os.environ.get('TAILSCALE_HTTPS_PORT', 3349))
     ts_dns = get_ts_dns_name()
     print('🚀 Taildrop Web 起動')
     print(f'   バインド  : {host}:{port}  ← Tailscale Serve 経由で公開')
