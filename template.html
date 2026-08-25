@@ -51,6 +51,29 @@
   .sf-item label:hover { background: #f0f4f8; }
   .sf-meta { margin-left: auto; font-size: 12px; color: #999; white-space: nowrap; }
   .empty-msg { color: #999; font-size: 14px; text-align: center; padding: 20px; }
+  .sf-dir {
+    flex: 1; min-width: 0; padding: 5px 9px;
+    border: 1.5px solid #ddd; border-radius: 6px; font-size: 13px;
+  }
+  .sf-dir:focus { outline: none; border-color: #0f7acc; }
+
+  .auto-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .auto-toggle { display: flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; user-select: none; }
+  .auto-folder {
+    width: 100%; padding: 8px 10px; border: 1.5px solid #ddd; border-radius: 6px;
+    font-size: 14px; margin-bottom: 12px;
+  }
+  .auto-folder:focus { outline: none; border-color: #0f7acc; }
+  .field-label { font-size: 13px; color: #555; display: block; margin-bottom: 4px; }
+
+  .log-view {
+    font-family: ui-monospace, monospace; font-size: 12px; background: #f7f9fb;
+    border-radius: 8px; padding: 12px; max-height: 260px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all; line-height: 1.8;
+  }
+  .log-view .l-ok   { color: #1a7f3c; }
+  .log-view .l-err  { color: #c0392b; }
+  .log-view .l-warn { color: #b07800; }
 
   .toolbar { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
   .tbtn { font-size: 12px; color: #0f7acc; background: none; border: 1px solid #c5dcf0;
@@ -115,11 +138,33 @@
   <div class="card">
     <h2>🗂 サーバ上のファイルから送信</h2>
     <div class="toolbar">
+      <span class="field-label" style="margin:0">対象フォルダ</span>
+      <input type="text" id="sf-dir" class="sf-dir"
+             placeholder="/opt/lxd-data/taildrop"
+             onkeydown="if(event.key==='Enter')loadServerFiles(this.value)">
+      <button class="tbtn" onclick="loadServerFiles(document.getElementById('sf-dir').value)">決定</button>
+    </div>
+    <div class="toolbar">
       <button class="tbtn" onclick="selectAll(true)">全て選択</button>
       <button class="tbtn" onclick="selectAll(false)">全て解除</button>
-      <button class="tbtn gray ml-auto" onclick="loadServerFiles()">🔄 更新</button>
+      <button class="tbtn gray ml-auto" onclick="loadServerFiles(document.getElementById('sf-dir').value)">🔄 更新</button>
     </div>
     <div class="server-files" id="server-files">読み込み中...</div>
+  </div>
+
+  <div class="card">
+    <h2>👀 監視フォルダにファイルが追加されたら送信</h2>
+    <div class="auto-row">
+      <label class="auto-toggle">
+        <input type="checkbox" id="auto-enabled"> 自動送信を有効にする
+      </label>
+      <span id="auto-state" style="font-size:12px;color:#999"></span>
+      <button class="tbtn ml-auto" onclick="saveAutoConfig()">💾 保存</button>
+    </div>
+    <label class="field-label" for="auto-folder">監視フォルダ</label>
+    <input type="text" id="auto-folder" class="auto-folder" placeholder="/path/to/watch/folder">
+    <span class="field-label">自動送信先デバイス</span>
+    <div class="device-grid" id="auto-device-list">読み込み中...</div>
   </div>
 
   <div class="card">
@@ -129,6 +174,16 @@
       <div class="progress-label" id="progress-label"></div>
     </div>
     <div id="status" style="margin-top:14px"></div>
+  </div>
+
+  <div class="card">
+    <h2>📜 ログ</h2>
+    <div class="toolbar">
+      <span style="font-size:12px;color:#999">5秒ごとに自動更新</span>
+      <button class="tbtn ml-auto" onclick="loadLog()">🔄 更新</button>
+      <button class="tbtn gray" onclick="clearLog()">🗑 クリア</button>
+    </div>
+    <div id="log-view" class="log-view"><span style="color:#999">読み込み中...</span></div>
   </div>
 
 </div>
@@ -249,6 +304,145 @@ function loadDevices() {
 }
 loadDevices();
 
+// ---- 監視フォルダ自動送信 ----
+let selectedAutoDevices = [];
+
+function renderDeviceGrid(div, devices, onChange) {
+  div.innerHTML = '';
+  if (!devices.length) { div.textContent = 'デバイスが見つかりません'; return; }
+  devices.forEach(d => {
+    const wrap = document.createElement('div');
+    wrap.className = 'device-item';
+    wrap.innerHTML = `<label>
+      <input type="checkbox" value="${d.dns_name}" ${d.online ? '' : 'disabled'}>
+      <span>${d.online ? '🟢' : '⚪'}</span>
+      <span>${d.name}<br><small style="color:#999;font-weight:400">${d.lastseen}</small></span>
+    </label>`;
+    wrap.querySelector('input').onchange = onChange;
+    div.appendChild(wrap);
+  });
+}
+
+function autoStateText() {
+  const enabled = document.getElementById('auto-enabled').checked;
+  const folder  = document.getElementById('auto-folder').value.trim();
+  if (!enabled) return '⏸ 停止中';
+  if (!folder)  return '⚠ フォルダ未設定';
+  return `▶ 監視中: ${folder}`;
+}
+
+async function loadAutoConfig() {
+  try {
+    const r = await fetch('/api/auto-config', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d   = await r.json();
+    document.getElementById('auto-folder').value  = d.watch_folder || '';
+    document.getElementById('auto-enabled').checked = !!d.enabled;
+    selectedAutoDevices = d.target_devices || [];
+    updateAutoState();
+    markAutoDevices();
+  } catch (e) {
+    console.error('loadAutoConfig failed:', e);
+  }
+}
+
+function markAutoDevices() {
+  document.querySelectorAll('#auto-device-list input').forEach(i => {
+    i.checked = selectedAutoDevices.includes(i.value);
+  });
+}
+
+function loadAutoDevices() {
+  const div = document.getElementById('auto-device-list');
+  fetch('/devices')
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(data => {
+      renderDeviceGrid(div, data, () => {
+        selectedAutoDevices = [...document.querySelectorAll('#auto-device-list input:checked')].map(i => i.value);
+      });
+      markAutoDevices();
+    })
+    .catch((err) => {
+      console.error('loadAutoDevices failed:', err);
+      div.textContent = 'デバイス取得エラー';
+    });
+}
+
+function updateAutoState() {
+  document.getElementById('auto-state').textContent = autoStateText();
+}
+
+async function saveAutoConfig() {
+  const btn = document.querySelector('.card .tbtn.ml-auto[onclick="saveAutoConfig()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  try {
+    const body = {
+      watch_folder:   document.getElementById('auto-folder').value,
+      enabled:        document.getElementById('auto-enabled').checked,
+      target_devices: selectedAutoDevices,
+    };
+    const r = await fetch('/api/auto-config', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    updateAutoState();
+  } catch (e) {
+    console.error('saveAutoConfig failed:', e);
+    showError('自動送信設定の保存に失敗しました: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 保存'; }
+  }
+}
+document.getElementById('auto-enabled').addEventListener('change', () => setTimeout(saveAutoConfig, 0));
+document.getElementById('auto-folder').addEventListener('change', updateAutoState);
+loadAutoConfig().then(loadAutoDevices);
+
+// ---- ログ ----
+function logLineClass(level) {
+  if (level === 'OK')   return 'l-ok';
+  if (level === 'ERR')  return 'l-err';
+  if (level === 'WARN') return 'l-warn';
+  return '';
+}
+
+async function loadLog() {
+  const div = document.getElementById('log-view');
+  try {
+    const r = await fetch('/api/log', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    if (!d.lines.length) {
+      div.innerHTML = '<span style="color:#999">ログはまだありません</span>';
+      return;
+    }
+    div.innerHTML = d.lines.map(l =>
+      `<div class="${logLineClass(l.level)}">${l.msg}</div>`
+    ).join('');
+    div.scrollTop = div.scrollHeight;
+  } catch (e) {
+    console.error('loadLog failed:', e);
+    div.innerHTML = '<span class="l-err">ログ取得エラー</span>';
+  }
+}
+
+async function clearLog() {
+  try {
+    const r = await fetch('/api/log/clear', { method: 'POST' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    loadLog();
+  } catch (e) {
+    console.error('clearLog failed:', e);
+    showError('ログのクリアに失敗しました: ' + e.message);
+  }
+}
+setInterval(loadLog, 5000);
+loadLog();
+
 // ---- ドロップゾーン ----
 const zone      = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -278,18 +472,22 @@ function humanSize(b) {
 }
 
 // ---- サーバファイル ----
-function loadServerFiles() {
+let serverFilesDir = '';
+
+function loadServerFiles(dir) {
   const div = document.getElementById('server-files');
+  if (typeof dir === 'string') serverFilesDir = dir.trim();
   div.innerHTML = '<span style="color:#999;font-size:14px;padding:10px;display:block">読み込み中...</span>';
-  fetch('/server-files')
-    .then(r => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
-    })
-    .then(data => {
+  const url = '/server-files' + (serverFilesDir ? `?dir=${encodeURIComponent(serverFilesDir)}` : '');
+  fetch(url)
+    .then(r => r.json().then(d => ({ ok: r.ok, status: r.status, data: d })))
+    .then(({ ok, status, data }) => {
+      if (!ok) throw new Error(data.error || `HTTP ${status}`);
+      serverFilesDir = data.dir;
+      document.getElementById('sf-dir').value = data.dir;
       div.innerHTML = '';
-      if (!data.length) { div.innerHTML = '<div class="empty-msg">ファイルがありません</div>'; return; }
-      data.forEach(f => {
+      if (!data.items.length) { div.innerHTML = '<div class="empty-msg">ファイルがありません</div>'; return; }
+      data.items.forEach(f => {
         const item = document.createElement('div');
         item.className = 'sf-item';
         item.innerHTML = `<label>
@@ -303,8 +501,7 @@ function loadServerFiles() {
     })
     .catch((err) => {
       console.error('loadServerFiles failed:', err);
-      div.innerHTML = '<div class="empty-msg">取得エラー</div>';
-      showError('サーバファイル一覧の取得に失敗しました: ' + err.message);
+      div.innerHTML = `<div class="empty-msg">${err.message}</div>`;
     });
 }
 loadServerFiles();
@@ -396,7 +593,7 @@ async function sendAll() {
       const r = await fetch('/send-server', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ files: sfChecked, devices: selectedDevices })
+        body:    JSON.stringify({ files: sfChecked, devices: selectedDevices, dir: serverFilesDir })
       });
       if (!r.ok) throw new Error(`サーバーエラー (HTTP ${r.status})`);
       const res = await r.json();
