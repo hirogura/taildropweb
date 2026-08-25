@@ -23,7 +23,7 @@ from watchdog.events import FileSystemEventHandler
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, template_folder=BASE_DIR)
 SERVER_FILE_DIR = "/opt/lxd-data/taildrop"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 SERVICE_NAME = os.environ.get("SERVICE_NAME", "taildrop-web")
 BRANCH = os.environ.get("BRANCH", "main")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
@@ -35,16 +35,6 @@ DEFAULT_AUTO_CONFIG = {
     "target_devices": [],
     "enabled":        False,
 }
-
-
-def get_tailscale_ip() -> str:
-    try:
-        ip = subprocess.check_output(['tailscale', 'ip', '-4'], timeout=5).decode().strip()
-        if ip:
-            return ip.split('\n')[0]
-    except Exception:
-        pass
-    return '0.0.0.0'
 
 
 def run_tailscale_cp(src: str, device: str):
@@ -441,6 +431,16 @@ def send_server():
     return jsonify({'results': results})
 
 
+def get_ts_dns_name() -> str:
+    try:
+        data = json.loads(subprocess.check_output(
+            ['tailscale', 'status', '--json'], timeout=5
+        ))
+        return (data.get('Self', {}).get('DNSName') or '').rstrip('.')
+    except Exception:
+        return ''
+
+
 def main():
     template_path = os.path.join(BASE_DIR, 'template.html')
     if not os.path.exists(template_path):
@@ -452,13 +452,17 @@ def main():
     load_auto_config()
     start_watching()
 
+    host  = os.environ.get('HOST', '127.0.0.1')
     port  = int(os.environ.get('PORT', 3349))
-    ts_ip = get_tailscale_ip()
+    https_port = int(os.environ.get('TAILSCALE_HTTPS_PORT', 3348))
+    ts_dns = get_ts_dns_name()
     print('🚀 Taildrop Web 起動')
-    print(f'   バインド  : {ts_ip}:{port}  ← Tailscaleネットワーク内のみ')
-    print(f'   アクセスURL: http://{ts_ip}:{port}')
+    print(f'   バインド  : {host}:{port}  ← Tailscale Serve 経由で公開')
+    if ts_dns:
+        print(f'   アクセスURL: https://{ts_dns}:{https_port}  (Tailnet内のみ)')
+    print(f'   ローカルURL: http://{host}:{port}')
     print(f'   サーバファイル: {SERVER_FILE_DIR}')
-    app.run(host=ts_ip, port=port, debug=False)
+    app.run(host=host, port=port, debug=False)
 
 
 if __name__ == '__main__':

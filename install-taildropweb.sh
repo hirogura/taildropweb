@@ -20,6 +20,7 @@ BRANCH="${BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/taildrop-web}"
 SERVICE_NAME="${SERVICE_NAME:-taildrop-web}"
 PORT="${PORT:-3349}"
+TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-3348}"
 SERVER_FILE_DIR="${SERVER_FILE_DIR:-/opt/lxd-data/taildrop}"
 
 info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
@@ -145,21 +146,38 @@ WantedBy=multi-user.target
 EOF
 ok "systemd ユニットファイル生成完了"
 
+# ── Tailscale Serve 設定（HTTPS化・Tailnet内のみ公開）────────────────────────
+info "Tailscale Serve を設定中..."
+if command -v tailscale >/dev/null 2>&1; then
+  tailscale serve --bg --https="${TAILSCALE_HTTPS_PORT}" http://127.0.0.1:${PORT} \
+    || warn "tailscale serve の設定に失敗しました"
+  TS_DOMAIN=$(tailscale status --json \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" \
+    2>/dev/null || echo "")
+  if [[ -n "${TS_DOMAIN}" ]]; then
+    ok "Tailscale Serve: https://${TS_DOMAIN}:${TAILSCALE_HTTPS_PORT}"
+  else
+    warn "Tailscale ドメインの取得に失敗しました"
+  fi
+else
+  warn "tailscale コマンドが見つかりません。Serve設定をスキップします"
+fi
+
 # ── サービス起動 ──────────────────────────────────────────────────────────────
 info "サービスを起動..."
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 systemctl restart "${SERVICE_NAME}"
 
-# 起動確認（Tailscale IP でアクセス。このアプリは ts_ip にのみバインドするため 127.0.0.1 では確認できない）
+# 起動確認（アプリは 127.0.0.1 のみにバインドするためローカルで確認）
 for i in $(seq 1 15); do
-  if curl -s --max-time 1 "http://${TS_IP}:${PORT}/" >/dev/null 2>&1; then
+  if curl -s --max-time 1 "http://127.0.0.1:${PORT}/" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 
-if curl -s --max-time 1 "http://${TS_IP}:${PORT}/" >/dev/null 2>&1; then
+if curl -s --max-time 1 "http://127.0.0.1:${PORT}/" >/dev/null 2>&1; then
   ok "サービス起動完了"
 else
   die "サービスの起動に失敗しました。journalctl -u ${SERVICE_NAME} -n 30 で確認してください"
@@ -170,8 +188,10 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ok "セットアップ完了！"
 echo ""
-echo "  Web UI : http://${TS_IP}:${PORT}"
-echo "  Web UI : http://${TS_HOSTNAME%%.*}:${PORT}  (MagicDNS)"
+echo "  Web UI : https://${TS_DOMAIN}:${TAILSCALE_HTTPS_PORT}  (Tailnet内のみ・HTTPS)"
+if [[ -n "${TS_DOMAIN}" ]]; then
+  echo "  Web UI : http://127.0.0.1:${PORT}  (サーバローカルのみ)"
+fi
 echo "  サーバファイル置き場: ${SERVER_FILE_DIR}"
 echo "  インストール先     : ${INSTALL_DIR} (GitHub: ${REPO_URL})"
 echo ""
