@@ -153,6 +153,15 @@
   </div>
 
   <div class="card">
+    <button class="send-btn" id="send-btn" onclick="sendAll()" disabled>📤 送信</button>
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-bar-bg"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="progress-label" id="progress-label"></div>
+    </div>
+    <div id="status" style="margin-top:14px"></div>
+  </div>
+
+  <div class="card">
     <h2>👀 監視フォルダにファイルが追加されたら送信</h2>
     <div class="auto-row">
       <label class="auto-toggle">
@@ -168,15 +177,6 @@
   </div>
 
   <div class="card">
-    <button class="send-btn" id="send-btn" onclick="sendAll()" disabled>📤 送信</button>
-    <div class="progress-wrap" id="progress-wrap">
-      <div class="progress-bar-bg"><div class="progress-bar" id="progress-bar"></div></div>
-      <div class="progress-label" id="progress-label"></div>
-    </div>
-    <div id="status" style="margin-top:14px"></div>
-  </div>
-
-  <div class="card">
     <h2>📜 ログ</h2>
     <div class="toolbar">
       <span style="font-size:12px;color:#999">5秒ごとに自動更新</span>
@@ -184,6 +184,34 @@
       <button class="tbtn gray" onclick="clearLog()">🗑 クリア</button>
     </div>
     <div id="log-view" class="log-view"><span style="color:#999">読み込み中...</span></div>
+  </div>
+
+  <div class="card">
+    <h2>🖼 監視フォルダの画像をリサイズして送信</h2>
+    <div class="auto-row">
+      <label class="auto-toggle">
+        <input type="checkbox" id="resize-enabled"> リサイズ自動送信を有効にする
+      </label>
+      <span id="resize-state" style="font-size:12px;color:#999"></span>
+      <button class="tbtn ml-auto" onclick="saveResizeConfig()">💾 保存</button>
+    </div>
+    <label class="field-label" for="resize-folder">監視フォルダ（jpg / jpeg / png を監視）</label>
+    <input type="text" id="resize-folder" class="auto-folder" placeholder="/path/to/watch/folder">
+    <div class="auto-row">
+      <div>
+        <span class="field-label">リサイズ幅 (px)</span>
+        <input type="number" id="resize-width" class="sf-dir" min="1" value="1024" onchange="updateResizeState()">
+      </div>
+      <div>
+        <span class="field-label">リサイズ高さ (px)</span>
+        <input type="number" id="resize-height" class="sf-dir" min="1" value="1024" onchange="updateResizeState()">
+      </div>
+      <label class="auto-toggle" style="align-self:flex-end;padding-bottom:12px">
+        <input type="checkbox" id="resize-keep-aspect" checked> アスペクト比を保持
+      </label>
+    </div>
+    <span class="field-label">送信先デバイス</span>
+    <div class="device-grid" id="resize-device-list">読み込み中...</div>
   </div>
 
 </div>
@@ -401,6 +429,96 @@ async function saveAutoConfig() {
 document.getElementById('auto-enabled').addEventListener('change', () => setTimeout(saveAutoConfig, 0));
 document.getElementById('auto-folder').addEventListener('change', updateAutoState);
 loadAutoConfig().then(loadAutoDevices);
+
+// ---- 監視フォルダ画像リサイズ送信 ----
+let selectedResizeDevices = [];
+
+function resizeStateText() {
+  const enabled = document.getElementById('resize-enabled').checked;
+  const folder  = document.getElementById('resize-folder').value.trim();
+  const w       = document.getElementById('resize-width').value || '?';
+  const h       = document.getElementById('resize-height').value || '?';
+  if (!enabled) return '⏸ 停止中';
+  if (!folder)  return '⚠ フォルダ未設定';
+  return `▶ 監視中: ${folder}（${w}x${h}）`;
+}
+
+function updateResizeState() {
+  document.getElementById('resize-state').textContent = resizeStateText();
+}
+
+async function loadResizeConfig() {
+  try {
+    const r = await fetch('/api/resize-config', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    document.getElementById('resize-folder').value      = d.resize_watch_folder || '';
+    document.getElementById('resize-enabled').checked   = !!d.resize_enabled;
+    document.getElementById('resize-width').value       = d.resize_width || 1024;
+    document.getElementById('resize-height').value      = d.resize_height || 1024;
+    document.getElementById('resize-keep-aspect').checked = d.resize_keep_aspect !== false;
+    selectedResizeDevices = d.resize_target_devices || [];
+    updateResizeState();
+    markResizeDevices();
+  } catch (e) {
+    console.error('loadResizeConfig failed:', e);
+  }
+}
+
+function markResizeDevices() {
+  document.querySelectorAll('#resize-device-list input').forEach(i => {
+    i.checked = selectedResizeDevices.includes(i.value);
+  });
+}
+
+function loadResizeDevices() {
+  const div = document.getElementById('resize-device-list');
+  fetch('/devices')
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(data => {
+      renderDeviceGrid(div, data, () => {
+        selectedResizeDevices = [...document.querySelectorAll('#resize-device-list input:checked')].map(i => i.value);
+      });
+      markResizeDevices();
+    })
+    .catch((err) => {
+      console.error('loadResizeDevices failed:', err);
+      div.textContent = 'デバイス取得エラー';
+    });
+}
+
+async function saveResizeConfig() {
+  const btn = document.querySelector('.card .tbtn.ml-auto[onclick="saveResizeConfig()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  try {
+    const body = {
+      resize_watch_folder:   document.getElementById('resize-folder').value,
+      resize_enabled:        document.getElementById('resize-enabled').checked,
+      resize_width:          parseInt(document.getElementById('resize-width').value) || 1024,
+      resize_height:         parseInt(document.getElementById('resize-height').value) || 1024,
+      resize_keep_aspect:    document.getElementById('resize-keep-aspect').checked,
+      resize_target_devices: selectedResizeDevices,
+    };
+    const r = await fetch('/api/resize-config', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    updateResizeState();
+  } catch (e) {
+    console.error('saveResizeConfig failed:', e);
+    showError('リサイズ自動送信設定の保存に失敗しました: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 保存'; }
+  }
+}
+document.getElementById('resize-enabled').addEventListener('change', () => setTimeout(saveResizeConfig, 0));
+document.getElementById('resize-folder').addEventListener('change', updateResizeState);
+loadResizeConfig().then(loadResizeDevices);
 
 // ---- ログ ----
 function logLineClass(level) {

@@ -20,21 +20,39 @@ import collections
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, template_folder=BASE_DIR)
 SERVER_FILE_DIR = "/opt/lxd-data/taildrop"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 SERVICE_NAME = os.environ.get("SERVICE_NAME", "taildrop-web")
 BRANCH = os.environ.get("BRANCH", "main")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 OLD_CONFIG_FILE = "/opt/taildrop-auto/config.json"
 LOG_MAXLEN = 200  # ログ最大行数
+RESIZE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
 
 DEFAULT_AUTO_CONFIG = {
     "watch_folder":   "",
     "target_devices": [],
     "enabled":        False,
+    # リサイズして送信
+    "resize_enabled":        False,
+    "resize_watch_folder":   "",
+    "resize_width":          1024,
+    "resize_height":         1024,
+    "resize_keep_aspect":    True,
+    "resize_target_devices": [],
 }
+
+RESIZE_CONFIG_KEYS = (
+    'resize_enabled', 'resize_watch_folder', 'resize_width',
+    'resize_height', 'resize_keep_aspect', 'resize_target_devices',
+)
 
 
 def run_tailscale_cp(src: str, device: str):
@@ -83,8 +101,9 @@ def log(level: str, msg: str):
 
 
 # ─── 自動送信: 設定 ─────────────────────────────────────────────────────────
-auto_config = {}
-observer    = None
+auto_config     = {}
+observer        = None
+resize_observer = None
 
 
 def load_auto_config():
@@ -215,6 +234,125 @@ def _schedule_service_restart(delay: float = 1.0):
     threading.Thread(target=worker, daemon=True).start()
 
 
+# ─── リサイズ送信: ファイル監視ハンドラ ────────────────────────────────────
+def resize_image(src: str, dst: str) -> None:
+    width  = int(auto_config.get('resize_width', 1024))
+    height = int(auto_config.get('resize_height', 1024))
+    keep   = auto_config.get('resize_keep_aspect', True)
+    img = Image.open(src)
+    img.load()
+    if keep:
+        img.thumbnail((width, height), Image.LANCZOS)
+    else:
+        img = img.resize((width, height), Image.LANCZOS)
+    ext = os.path.splitext(dst)[1].lower()
+    if ext in ('.jpg', '.jpeg') and img.mode not in ('RGB', 'L'):
+        img = img.convert('RGB')
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    img.save(dst, quality=90)
+
+
+class ResizeSendHandler(FileSystemEventHandler):
+    def __init__(self):
+        self._pending = {}
+        self._lock    = threading.Lock()
+
+    def _handle(self, path: str):
+        name = os.path.basename(path)
+        if name.startswith('.') or name.endswith(('.tmp', '.part', '.crdownload')):
+            return
+        if os.path.splitext(path)[1].lower() not in RESIZE_EXTENSIONS:
+            return
+        with self._lock:
+            already = path in self._pending
+            self._pending[path] = time.time()
+            if already:
+                return
+        threading.Thread(target=self._delayed_resize_send, args=(path,), daemon=True).start()
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self._handle(event.src_path)
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            self._handle(event.dest_path)
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            self._handle(event.src_path)
+
+    def _delayed_resize_send(self, path: str):
+        # 書き込みが落ち着くまで待つ（最後のイベントから1.5秒）
+        while True:
+            with self._lock:
+                last = self._pending.get(path, 0)
+            if time.time() - last >= 1.5:
+                break
+            time.sleep(0.3)
+
+        with self._lock:
+            self._pending.pop(path, None)
+
+        if Image is None:
+            log('ERR', 'Pillow がインストールされていないためリサイズできません')
+            return
+        if not os.path.isfile(path):
+            return
+
+        devices = auto_config.get('resize_target_devices', [])
+        if not devices:
+            log('WARN', f'送信先が未設定のためスキップ: {os.path.basename(path)}')
+            return
+
+        fname = os.path.basename(path)
+        log('INFO', f'検知(リサイズ): {fname} → {", ".join(devices)} に送信開始')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = os.path.join(tmp, fname)
+            try:
+                resize_image(path, out_path)
+            except Exception as e:
+                log('ERR', f'❌ {fname} リサイズ失敗 : {e}')
+                return
+            for dev in devices:
+                ok_, err = run_tailscale_cp(out_path, dev)
+                if ok_:
+                    log('OK',  f'✅ {fname} (リサイズ済) → {dev}')
+                else:
+                    log('ERR', f'❌ {fname} → {dev} : {err}')
+
+
+def start_resize_watching():
+    global resize_observer
+    try:
+        if resize_observer and resize_observer.is_alive():
+            resize_observer.stop()
+            resize_observer.join(timeout=5)
+        resize_observer = None
+
+        if not auto_config.get('resize_enabled', False):
+            log('INFO', 'リサイズ監視停止中')
+            return
+
+        watch_dir = auto_config.get('resize_watch_folder', '').strip()
+        if not watch_dir:
+            log('WARN', 'リサイズ監視フォルダが未設定です')
+            return
+        if not os.path.isdir(watch_dir):
+            log('WARN', f'リサイズ監視フォルダが見つかりません: {watch_dir}')
+            return
+
+        resize_observer = Observer()
+        resize_observer.schedule(ResizeSendHandler(), watch_dir, recursive=False)
+        resize_observer.start()
+        w = int(auto_config.get('resize_width', 1024))
+        h = int(auto_config.get('resize_height', 1024))
+        log('INFO', f'リサイズ監視開始: {watch_dir} ({w}x{h})')
+    except Exception as e:
+        log('ERR', f'リサイズ監視の開始に失敗しました: {e}')
+
+
 @app.route('/api/version')
 def api_version():
     up_to_date = None
@@ -286,6 +424,24 @@ def api_auto_config():
             log('ERR', f'/api/auto-config 処理中にエラー: {e}')
             return jsonify({'ok': False, 'error': str(e)}), 500
     return jsonify(auto_config)
+
+
+@app.route('/api/resize-config', methods=['GET', 'POST'])
+def api_resize_config():
+    global auto_config
+    if request.method == 'POST':
+        try:
+            data = request.get_json(force=True, silent=True) or {}
+            for k in RESIZE_CONFIG_KEYS:
+                if k in data:
+                    auto_config[k] = data[k]
+            save_auto_config()
+            start_resize_watching()
+            return jsonify({'ok': True})
+        except Exception as e:
+            log('ERR', f'/api/resize-config 処理中にエラー: {e}')
+            return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({k: auto_config.get(k, DEFAULT_AUTO_CONFIG.get(k)) for k in RESIZE_CONFIG_KEYS})
 
 
 @app.route('/api/log')
@@ -451,6 +607,7 @@ def main():
 
     load_auto_config()
     start_watching()
+    start_resize_watching()
 
     host  = os.environ.get('HOST', '127.0.0.1')
     port  = int(os.environ.get('PORT', 3349))
