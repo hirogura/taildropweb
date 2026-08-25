@@ -13,10 +13,15 @@ import json
 import os
 import tempfile
 import zipfile
+import time
+import threading
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, template_folder=BASE_DIR)
 SERVER_FILE_DIR = "/opt/lxd-data/taildrop"
+APP_VERSION = "1.0.0"
+SERVICE_NAME = os.environ.get("SERVICE_NAME", "taildrop-web")
+BRANCH = os.environ.get("BRANCH", "main")
 
 
 def get_tailscale_ip() -> str:
@@ -53,6 +58,77 @@ def human_size(size: int) -> str:
             return f'{size} {unit}' if unit == 'B' else f'{size:.1f} {unit}'
         size /= 1024
     return f'{size:.1f} TB'
+
+
+def _git(args):
+    return subprocess.check_output(
+        ['git', '-C', BASE_DIR] + args, timeout=60
+    ).decode().strip()
+
+
+def _schedule_service_restart(delay: float = 1.0):
+    """レスポンス返却後にサービスを再起動する"""
+    def worker():
+        time.sleep(delay)
+        try:
+            subprocess.run(['systemctl', 'restart', SERVICE_NAME], timeout=30)
+        except Exception:
+            pass
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@app.route('/api/version')
+def api_version():
+    up_to_date = None
+    try:
+        local  = _git(['rev-parse', 'HEAD'])
+        remote = _git(['rev-parse', f'origin/{BRANCH}'])
+        up_to_date = (local == remote)
+    except Exception:
+        pass
+    return jsonify({'version': APP_VERSION, 'up_to_date': up_to_date})
+
+
+@app.route('/api/update', methods=['POST'])
+def api_update():
+    steps = []
+    try:
+        _git(['fetch', 'origin', BRANCH])
+        steps.append('GitHubから最新ソースを取得しました')
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': f'❌ 更新失敗（fetch）: {e}'}), 500
+
+    try:
+        _git(['reset', '--hard', f'origin/{BRANCH}'])
+        steps.append(f'origin/{BRANCH} に更新しました')
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': f'❌ 更新失敗（reset）: {e}'}), 500
+
+    pip = os.path.join(BASE_DIR, 'venv', 'bin', 'pip')
+    if os.path.exists(pip):
+        try:
+            subprocess.run(
+                [pip, 'install', '-q', '-r',
+                 os.path.join(BASE_DIR, 'requirements.txt')],
+                cwd=BASE_DIR, timeout=300,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                check=True,
+            )
+            steps.append('依存パッケージを確認しました')
+        except subprocess.CalledProcessError as e:
+            err = e.stderr.decode(errors='replace').strip() if e.stderr else ''
+            return jsonify({'ok': False,
+                            'msg': f'❌ 依存パッケージのインストールに失敗: {err}'}), 500
+
+    _schedule_service_restart()
+    steps.append('まもなくサービスを再起動します...')
+    return jsonify({'ok': True, 'msg': '\n'.join(steps)})
+
+
+@app.route('/api/restart', methods=['POST'])
+def api_restart():
+    _schedule_service_restart()
+    return jsonify({'ok': True, 'msg': 'まもなくサービスを再起動します...'})
 
 
 @app.route('/')

@@ -10,6 +10,17 @@
   body { font-family: system-ui, sans-serif; background: #f0f2f5; color: #222; }
   header { background: #0f7acc; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 10px; }
   header h1 { font-size: 20px; font-weight: 600; }
+  .app-ver { font-size: 12px; color: rgba(255,255,255,.75); font-weight: 400; }
+  .hbtn {
+    font-size: 12px; color: #fff; background: rgba(255,255,255,.15);
+    border: 1px solid rgba(255,255,255,.5); border-radius: 6px;
+    cursor: pointer; padding: 4px 10px; transition: background .15s;
+    margin-left: 4px; white-space: nowrap;
+  }
+  .hbtn:hover:not(:disabled) { background: rgba(255,255,255,.3); }
+  .hbtn:disabled { opacity: .55; cursor: not-allowed; }
+  .hbtn.attention { background: #e8a013; border-color: #e8a013; font-weight: 600; }
+  .hbtn.attention:hover:not(:disabled) { background: #c98d0f; }
   .container { max-width: 900px; margin: 24px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 20px; }
   .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.1); padding: 20px 24px; }
   .card h2 { font-size: 15px; font-weight: 600; color: #444; margin-bottom: 14px; border-bottom: 1px solid #eee; padding-bottom: 8px; }
@@ -79,6 +90,9 @@
 <header>
   <span style="font-size:22px">🚀</span>
   <h1>Taildrop Web</h1>
+  <span class="app-ver" id="app-version"></span>
+  <button class="hbtn ml-auto" id="update-btn" onclick="doUpdate()">アップデート</button>
+  <button class="hbtn" id="restart-btn" onclick="doRestart()">再起動</button>
 </header>
 
 <div class="container">
@@ -132,6 +146,74 @@ function showError(msg) {
   clearTimeout(toast._hideTimer);
   toast._hideTimer = setTimeout(() => { toast.style.display = 'none'; }, 6000);
 }
+
+// ---- バージョン / 更新 / 再起動 ----
+async function loadVersion() {
+  try {
+    const r = await fetch('/api/version', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    document.getElementById('app-version').textContent = `v.${d.version}`;
+    const btn = document.getElementById('update-btn');
+    if (d.up_to_date === false) btn.classList.add('attention');
+  } catch (e) {
+    console.error('loadVersion failed:', e);
+  }
+}
+
+async function waitServiceAndReload(startDelayMs) {
+  const btn = document.getElementById('update-btn');
+  btn.disabled = true;
+  document.getElementById('restart-btn').disabled = true;
+  await new Promise(r => setTimeout(r, startDelayMs));
+  for (let i = 0; i < 60; i++) {
+    try {
+      const r = await fetch('/', { cache: 'no-store' });
+      if (r.ok) { location.reload(); return; }
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  alert('サービスが応答しません。しばらく待ってからページを再読み込みしてください。');
+  btn.disabled = false;
+  document.getElementById('restart-btn').disabled = false;
+}
+
+async function doUpdate() {
+  if (!confirm('GitHubから最新版を取得してアップデートします。\nよろしいですか？')) return;
+  const btn = document.getElementById('update-btn');
+  btn.disabled = true;
+  btn.textContent = '更新中...';
+  try {
+    const r = await fetch('/api/update', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.msg || `HTTP ${r.status}`);
+    btn.textContent = '再起動中...';
+    await waitServiceAndReload(2000);
+  } catch (e) {
+    console.error('doUpdate failed:', e);
+    showError('アップデートに失敗しました: ' + e.message);
+    btn.textContent = 'アップデート';
+    btn.disabled = false;
+  }
+}
+
+async function doRestart() {
+  if (!confirm('Taildrop Webサービスを再起動します。\nよろしいですか？')) return;
+  const btn = document.getElementById('restart-btn');
+  btn.disabled = true;
+  btn.textContent = '再起動中...';
+  try {
+    const r = await fetch('/api/restart', { method: 'POST' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    await waitServiceAndReload(2000);
+  } catch (e) {
+    console.error('doRestart failed:', e);
+    showError('再起動に失敗しました: ' + e.message);
+    btn.textContent = '再起動';
+    btn.disabled = false;
+  }
+}
+loadVersion();
 
 // ---- デバイス ----
 function loadDevices() {
